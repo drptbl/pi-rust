@@ -82,13 +82,27 @@ fn resolve_stored_key(credential: Credential, run_commands: bool) -> Credential 
     }
 }
 
+/// Writes `text` to a new file beside `path` and renames it over `path`, so a reader in another
+/// process, which takes no lock, sees the old file or the new one, never one half written.
 fn write_file(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
+    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let partial = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options.open(path)?.write_all(text.as_bytes())
+    let written = options.open(&partial).and_then(|mut file| {
+        file.write_all(text.as_bytes())?;
+        file.sync_all()
+    });
+    match written.and_then(|()| std::fs::rename(&partial, path)) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_file(&partial);
+            Err(error)
+        }
+    }
 }
 
 fn create_parent(path: &Path) -> std::io::Result<()> {

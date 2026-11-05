@@ -167,3 +167,23 @@ async fn in_memory_and_runtime_overlay_follow_the_same_contract() {
     assert!(overlay.read("openai").await.unwrap().is_none());
     assert!(overlay.has_runtime_api_key("groq"));
 }
+
+#[tokio::test]
+async fn a_write_replaces_the_file_whole_so_a_reader_never_sees_it_half_written() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let (_dir, path) = temp_auth("auth.json");
+    let store = FileCredentialStore::new(&path);
+    store.update("anthropic", set(api_key("first"))).await.unwrap();
+    let before = std::fs::metadata(&path).unwrap().ino();
+    store.update("anthropic", set(api_key("second"))).await.unwrap();
+    let after = std::fs::metadata(&path).unwrap();
+    assert_ne!(after.ino(), before, "a new file renamed into place, not the old one truncated");
+    assert_eq!(after.permissions().mode() & 0o777, 0o600);
+    let leftovers: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "auth.json" && !name.ends_with(".lock"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    assert_eq!(key_of(store.read("anthropic").await.unwrap()).as_deref(), Some("second"));
+}

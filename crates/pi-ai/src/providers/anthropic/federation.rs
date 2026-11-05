@@ -197,6 +197,7 @@ async fn exchange(
         max_retry_delay_ms: None,
         no_retry_statuses: &[],
         label: Some("Token exchange"),
+        on_retry: None,
     };
     let response = match send_request(&request, &send).await {
         Ok(response) => response,

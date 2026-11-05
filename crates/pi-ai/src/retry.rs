@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::hash::{BuildHasher, Hasher};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use regex::{Regex, RegexBuilder};
@@ -47,7 +47,21 @@ impl std::fmt::Display for ProviderRequestError {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+/// A retry about to happen: the failure, and how long the request waits before it goes again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProviderRetry {
+    /// This retry, counted from 1.
+    pub attempt: u32,
+    pub max_retries: u32,
+    pub delay_ms: u64,
+    pub status: Option<u16>,
+    pub message: String,
+}
+
+/// Hears of each retry before its wait, so a caller can show why a request is taking longer.
+pub type OnProviderRetryFn = Arc<dyn Fn(&ProviderRetry) + Send + Sync>;
+
+#[derive(Clone, Copy, Default)]
 pub struct ProviderRetryOptions<'a> {
     pub max_retries: u32,
     /// `None` uses 60 s; `Some(0)` disables the cap.
@@ -55,6 +69,19 @@ pub struct ProviderRetryOptions<'a> {
     pub cancel: Option<&'a CancellationToken>,
     /// Statuses that fail at once although the default policy would retry them.
     pub no_retry_statuses: &'a [u16],
+    pub on_retry: Option<&'a OnProviderRetryFn>,
+}
+
+impl std::fmt::Debug for ProviderRetryOptions<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderRetryOptions")
+            .field("max_retries", &self.max_retries)
+            .field("max_retry_delay_ms", &self.max_retry_delay_ms)
+            .field("no_retry_statuses", &self.no_retry_statuses)
+            .field("on_retry", &self.on_retry.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Mirrors the OpenAI and Anthropic SDK policy: `x-should-retry`, then 408, 409, 429, 5xx, and transport errors.
@@ -173,6 +200,15 @@ where
         remaining -= 1;
         let delay = provider_retry_delay_ms(&error, retry_index, options.max_retry_delay_ms)
             .map_err(|message| ProviderRequestError { message, ..error.clone() })?;
+        if let Some(hook) = options.on_retry {
+            hook(&ProviderRetry {
+                attempt: retry_index + 1,
+                max_retries: options.max_retries,
+                delay_ms: delay,
+                status: error.status,
+                message: error.message.clone(),
+            });
+        }
         if !cancellable_sleep(Duration::from_millis(delay), options.cancel).await {
             return Err(ProviderRequestError::aborted());
         }

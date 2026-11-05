@@ -35,6 +35,54 @@ async fn retries_retryable_errors_after_the_server_delay() {
     assert_eq!(started.elapsed(), Duration::from_millis(1000));
 }
 
+#[tokio::test(start_paused = true)]
+async fn each_retry_is_announced_before_its_wait() {
+    let (_, request) = scripted(vec![
+        provider_error(429, &[("retry-after-ms", "1000")]),
+        provider_error(503, &[("retry-after", "2")]),
+    ]);
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = heard.clone();
+    let started = tokio::time::Instant::now();
+    let hook: OnProviderRetryFn = Arc::new(move |retry: &ProviderRetry| {
+        log.lock().unwrap().push((retry.clone(), started.elapsed()));
+    });
+    let options = ProviderRetryOptions { max_retries: 3, on_retry: Some(&hook), ..Default::default() };
+    assert_eq!(retry_provider_request(request, options).await, Ok("ok"));
+    let heard = heard.lock().unwrap();
+    let retry = |attempt, delay_ms, status: u16| ProviderRetry {
+        attempt,
+        max_retries: 3,
+        delay_ms,
+        status: Some(status),
+        message: format!("Provider error: {status}"),
+    };
+    assert_eq!(
+        *heard,
+        [(retry(1, 1000, 429), Duration::ZERO), (retry(2, 2000, 503), Duration::from_millis(1000))],
+        "each before its wait, with the delay the server asked for"
+    );
+}
+
+#[tokio::test]
+async fn a_failure_that_is_not_retried_is_not_announced() {
+    let (_, request) = scripted(vec![provider_error(400, &[])]);
+    let heard = Arc::new(AtomicU32::new(0));
+    let count = heard.clone();
+    let hook: OnProviderRetryFn = Arc::new(move |_: &ProviderRetry| {
+        count.fetch_add(1, Ordering::SeqCst);
+    });
+    let options = ProviderRetryOptions { max_retries: 3, on_retry: Some(&hook), ..Default::default() };
+    assert!(retry_provider_request(request, options).await.is_err());
+    assert_eq!(heard.load(Ordering::SeqCst), 0);
+
+    // Out of retries: the failure that ends it is not announced.
+    let (calls, request) = scripted(vec![provider_error(503, &[("retry-after-ms", "0")]); 3]);
+    let options = ProviderRetryOptions { max_retries: 1, on_retry: Some(&hook), ..Default::default() };
+    assert!(retry_provider_request(request, options).await.is_err());
+    assert_eq!((calls.load(Ordering::SeqCst), heard.load(Ordering::SeqCst)), (2, 1));
+}
+
 #[tokio::test]
 async fn non_retryable_and_blocked_statuses_fail_at_once() {
     let (calls, request) = scripted(vec![provider_error(429, &[("x-should-retry", "false")]); 3]);

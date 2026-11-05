@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::http::{client_for_env, resolve_proxy_url};
 use crate::registry::{OnPayloadFn, OnResponseFn, ProviderResponse};
-use crate::retry::{ProviderRequestError, ProviderRetryOptions, retry_provider_request};
+use crate::retry::{OnProviderRetryFn, ProviderRequestError, ProviderRetryOptions, retry_provider_request};
 use crate::types::Model;
 
 /// Largest error body read from a failed response.
@@ -96,6 +96,7 @@ pub(crate) struct SendOptions<'a> {
     pub no_retry_statuses: &'a [u16],
     /// Service name for `"<label> returned <status>"` messages; `None` uses `Provider HTTP <status>`.
     pub label: Option<&'a str>,
+    pub on_retry: Option<&'a OnProviderRetryFn>,
 }
 
 impl<'a> SendOptions<'a> {
@@ -108,6 +109,7 @@ impl<'a> SendOptions<'a> {
             max_retry_delay_ms: options.max_retry_delay_ms,
             no_retry_statuses: &[],
             label: None,
+            on_retry: None,
         }
     }
 }
@@ -252,6 +254,7 @@ fn retry_options<'a>(options: &SendOptions<'a>) -> ProviderRetryOptions<'a> {
         max_retry_delay_ms: options.max_retry_delay_ms,
         cancel: Some(options.cancel),
         no_retry_statuses: options.no_retry_statuses,
+        on_retry: options.on_retry,
     }
 }
 

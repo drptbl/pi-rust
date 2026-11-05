@@ -43,6 +43,7 @@ pub(crate) async fn send(
         max_retry_delay_ms: options.max_retry_delay_ms,
         no_retry_statuses: &[],
         label: None,
+        on_retry: options.on_retry.as_ref(),
     };
     let result = send_request(request, &send_options).await;
     let report = |response: ProviderResponse| {

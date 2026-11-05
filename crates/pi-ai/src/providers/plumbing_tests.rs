@@ -37,12 +37,19 @@ async fn retries_retryable_statuses_after_the_server_delay() {
     ])
     .await;
     let model = test_model(API, "openai", &format!("{}/v1", server.base_url));
-    let options = StreamOptions { max_retries: Some(1), ..options() };
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let log = heard.clone();
+    let on_retry: crate::retry::OnProviderRetryFn =
+        Arc::new(move |retry: &crate::retry::ProviderRetry| log.lock().unwrap().push(retry.clone()));
+    let options = StreamOptions { max_retries: Some(1), on_retry: Some(on_retry), ..options() };
     let (_, message) = collect(OpenAICompletions.stream(&model, &context(), options)).await;
     assert_eq!((message.stop_reason, message.text()), (StopReason::Stop, "hi".to_string()));
     server.request().await;
     server.request().await;
     assert_eq!(server.requests().len(), 2);
+    let heard = heard.lock().unwrap();
+    assert_eq!(heard.len(), 1, "the caller hears of the retry before its wait");
+    assert_eq!((heard[0].attempt, heard[0].max_retries, heard[0].delay_ms, heard[0].status), (1, 1, 10, Some(429)));
 }
 
 #[tokio::test]

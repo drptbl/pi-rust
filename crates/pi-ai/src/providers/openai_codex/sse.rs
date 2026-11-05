@@ -12,7 +12,7 @@ use super::request::{compress_zstd, resolve_codex_url};
 use crate::http::client_for_env;
 use crate::registry::StreamOptions;
 use crate::request::{error_chain, provider_response};
-use crate::retry::parse_http_date_ms;
+use crate::retry::{ProviderRetry, parse_http_date_ms};
 use crate::sse::sse_events;
 use crate::stream::MessageBuilder;
 use crate::types::{StopReason, now_ms};
@@ -106,7 +106,7 @@ pub(super) fn error_message(status: u16, reason: &str, text: &str) -> String {
 }
 
 enum SendFailure {
-    Failed { message: String, delay_ms: Option<u64> },
+    Failed { message: String, delay_ms: Option<u64>, status: Option<u16> },
     DelayTooLong(String),
 }
 
@@ -126,11 +126,13 @@ async fn send_once(
             SendFailure::Failed {
                 message: format!("Codex SSE response headers timed out after {timeout}ms"),
                 delay_ms: None,
+                status: None,
             }
         })?,
         None => request.send().await,
     };
-    let response = sent.map_err(|error| SendFailure::Failed { message: error_chain(&error), delay_ms: None })?;
+    let response =
+        sent.map_err(|error| SendFailure::Failed { message: error_chain(&error), delay_ms: None, status: None })?;
     if let Some(hook) = &options.on_response {
         hook(&provider_response(&response), &prepared.model);
     }
@@ -143,7 +145,7 @@ async fn send_once(
     let text = response.text().await.unwrap_or_default();
     let message = error_message(status.as_u16(), &reason, &text);
     if !is_retryable(status.as_u16(), &text) {
-        return Err(SendFailure::Failed { message, delay_ms: None });
+        return Err(SendFailure::Failed { message, delay_ms: None, status: Some(status.as_u16()) });
     }
     let max = options.max_retry_delay_ms.unwrap_or(DEFAULT_MAX_RETRY_DELAY_MS);
     match retry_after_ms(&headers) {
@@ -152,7 +154,11 @@ async fn send_once(
             (delay / 1000.0).ceil(),
             (max as f64 / 1000.0).ceil()
         ))),
-        delay => Err(SendFailure::Failed { message, delay_ms: delay.map(|delay| delay as u64) }),
+        delay => Err(SendFailure::Failed {
+            message,
+            delay_ms: delay.map(|delay| delay as u64),
+            status: Some(status.as_u16()),
+        }),
     }
 }
 
@@ -172,14 +178,17 @@ pub(super) async fn request(
             Ok(response) => break response,
             Err(failure) => failure,
         };
-        let (message, delay_ms) = match failure {
+        let (message, delay_ms, status) = match failure {
             SendFailure::DelayTooLong(message) => return Err(CodexError::Transport(message)),
-            SendFailure::Failed { message, delay_ms } => (message, delay_ms),
+            SendFailure::Failed { message, delay_ms, status } => (message, delay_ms, status),
         };
         if attempt >= max_retries || message.contains("usage limit") {
             return Err(CodexError::Transport(message));
         }
         let delay = delay_ms.unwrap_or(BASE_DELAY_MS * 2u64.pow(attempt));
+        if let Some(hook) = &options.on_retry {
+            hook(&ProviderRetry { attempt: attempt + 1, max_retries, delay_ms: delay, status, message });
+        }
         tokio::time::sleep(Duration::from_millis(delay)).await;
         attempt += 1;
     };

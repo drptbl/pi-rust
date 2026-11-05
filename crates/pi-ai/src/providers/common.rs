@@ -90,6 +90,7 @@ pub(crate) fn spawn_provider_stream_with_fallback<H: SseHandler>(
             max_retry_delay_ms: options.max_retry_delay_ms,
             no_retry_statuses: &[],
             label: None,
+            on_retry: options.on_retry.as_ref(),
         };
         let drive = async {
             let mut fallback = fallback;

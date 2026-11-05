@@ -125,6 +125,8 @@ pub struct StreamOptions {
     pub on_payload: Option<OnPayloadFn>,
     pub on_response: Option<OnResponseFn>,
     pub on_provider_stream_event: Option<OnProviderStreamEventFn>,
+    /// Hears of each retry of a rejected request before its wait.
+    pub on_retry: Option<crate::retry::OnProviderRetryFn>,
 }
 
 impl std::fmt::Debug for StreamOptions {

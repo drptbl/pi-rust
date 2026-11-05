@@ -322,7 +322,17 @@ impl Run {
             if sends >= MAX_SENDS || !retryable || options.cancel.is_cancelled() {
                 return Err(failure);
             }
-            tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(sends - 1))).await;
+            let delay_ms = 100 * 2u64.pow(sends - 1);
+            if let Some(hook) = &options.on_retry {
+                hook(&crate::retry::ProviderRetry {
+                    attempt: sends,
+                    max_retries: MAX_SENDS - 1,
+                    delay_ms,
+                    status: failure.status,
+                    message: failure.message.clone(),
+                });
+            }
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
     }
 }

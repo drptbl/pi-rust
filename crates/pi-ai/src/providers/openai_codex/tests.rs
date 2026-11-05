@@ -196,10 +196,17 @@ async fn retries_with_server_delays_and_reports_usage_limits() {
         _ => sse_reply(&payload),
     })
     .await;
-    let options = StreamOptions { max_retries: Some(2), ..sse_options(&mock_token("acc")) };
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let log = heard.clone();
+    let on_retry: crate::retry::OnProviderRetryFn =
+        Arc::new(move |retry: &crate::retry::ProviderRetry| log.lock().unwrap().push(retry.clone()));
+    let options = StreamOptions { max_retries: Some(2), on_retry: Some(on_retry), ..sse_options(&mock_token("acc")) };
     let model = codex_model(&server.base_url);
     let message = OpenAICodexResponses.stream(&model, &context(), options).result(&model).await;
     assert_eq!((message.text(), calls.load(Ordering::SeqCst)), ("Hello".to_string(), 2));
+    let heard = heard.lock().unwrap().clone();
+    assert_eq!(heard.len(), 1, "the retry is announced");
+    assert_eq!((heard[0].attempt, heard[0].max_retries, heard[0].delay_ms, heard[0].status), (1, 2, 10, Some(503)));
 
     let server =
         RouteServer::start(|_| Reply::json(503, &json!({"error": {"message": "busy"}})).header("retry-after", "2"))

@@ -283,9 +283,17 @@ async fn retries_throttling_before_the_stream_starts() {
     })
     .await;
     let model = bedrock_model("us.anthropic.claude-opus-4-8", &server.base_url);
-    let (_, message) = collect(BedrockConverseStream.stream(&model, &context(), bearer_options())).await;
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = heard.clone();
+    let on_retry: crate::retry::OnProviderRetryFn =
+        Arc::new(move |retry: &crate::retry::ProviderRetry| log.lock().unwrap().push(retry.clone()));
+    let options = StreamOptions { on_retry: Some(on_retry), ..bearer_options() };
+    let (_, message) = collect(BedrockConverseStream.stream(&model, &context(), options)).await;
     assert_eq!(message.stop_reason, StopReason::Stop);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let heard = heard.lock().unwrap();
+    assert_eq!(heard.len(), 1, "the retry is announced");
+    assert_eq!((heard[0].attempt, heard[0].delay_ms, heard[0].status), (1, 100, Some(429)));
 }
 
 #[tokio::test]
